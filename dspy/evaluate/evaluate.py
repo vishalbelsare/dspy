@@ -1,189 +1,231 @@
-import dsp
-import tqdm
+import logging
 import types
-import threading
+from typing import Any, Callable, List, Optional
+
 import pandas as pd
+import tqdm
+
+import dspy
+from dspy.utils.parallelizer import ParallelExecutor
 
 try:
-    from IPython.display import display as ipython_display, HTML
+    from IPython.display import HTML
+    from IPython.display import display as display
+
 except ImportError:
-    ipython_display = print
-    HTML = lambda x: x
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from dsp.utils import EM
-from dsp.evaluation.utils import *
+    def display(obj: Any):
+        """
+        Display the specified Python object in the console.
 
-"""
-TODO: Counting failures and having a max_failure count. When that is exceeded (also just at the end),
-we print the number of failures, the first N examples that failed, and the first N exceptions raised.
-"""
+        :param obj: The Python object to display.
+        """
+        print(obj)
+
+    def HTML(x: str) -> str:
+        """
+        Obtain the HTML representation of the specified string.
+        """
+        # NB: This method exists purely for code compatibility with the IPython HTML() function in
+        # environments where IPython is not available. In such environments where IPython is not
+        # available, this method will simply return the input string.
+        return x
+
+
+# TODO: Counting failures and having a max_failure count. When that is exceeded (also just at the end),
+# we print the number of failures, the first N examples that failed, and the first N exceptions raised.
+
+logger = logging.getLogger(__name__)
 
 
 class Evaluate:
-    def __init__(self, *, devset, metric=None, num_threads=1, display_progress=False,
-                 display_table=False, display=True, max_errors=5, return_outputs=False):
+    """DSPy Evaluate class.
+
+    This class is used to evaluate the performance of a DSPy program. Users need to provide a evaluation dataset and 
+    a metric function in order to use this class. This class supports parallel evaluation on the provided dataset.
+    """
+    def __init__(
+        self,
+        *,
+        devset: List["dspy.Example"],
+        metric: Optional[Callable] = None,
+        num_threads: int = 1,
+        display_progress: bool = False,
+        display_table: bool = False,
+        max_errors: int = 5,
+        return_all_scores: bool = False,
+        return_outputs: bool = False,
+        provide_traceback: bool = False,
+        failure_score: float = 0.0,
+        **kwargs,
+    ):
+        """
+        Args:
+            devset (List[dspy.Example]): the evaluation dataset.
+            metric (Callable): The metric function to use for evaluation.
+            num_threads (int): The number of threads to use for parallel evaluation.
+            display_progress (bool): Whether to display progress during evaluation.
+            display_table (bool): Whether to display the evaluation results in a table.
+            max_errors (int): The maximum number of errors to allow before stopping evaluation.
+            return_all_scores (bool): Whether to return scores for every data record in `devset`.
+            return_outputs (bool): Whether to return the dspy program's outputs for every data in `devset`.
+            provide_traceback (bool): Whether to provide traceback information during evaluation.
+            failure_score (float): The default score to use if evaluation fails due to an exception.
+        """
         self.devset = devset
         self.metric = metric
         self.num_threads = num_threads
         self.display_progress = display_progress
         self.display_table = display_table
-        self.display = display
         self.max_errors = max_errors
-        self.error_count = 0
-        self.error_lock = threading.Lock()
+        self.return_all_scores = return_all_scores
         self.return_outputs = return_outputs
+        self.provide_traceback = provide_traceback
+        self.failure_score = failure_score
 
-    def _execute_single_thread(self, wrapped_program, devset, display_progress):
-        ncorrect = 0
-        ntotal = 0
-        reordered_devset = []
-        
-        pbar = tqdm.tqdm(total=len(devset), dynamic_ncols=True, disable=not display_progress)
-        for idx, arg in devset:
-            example_idx, example, prediction, score = wrapped_program(idx, arg)
-            reordered_devset.append((example_idx, example, prediction, score))
-            ncorrect += score
-            ntotal += 1
-            self._update_progress(pbar, ncorrect, ntotal)
-        pbar.close()
-        
-        return reordered_devset, ncorrect, ntotal
+    def __call__(
+        self,
+        program: "dspy.Module",
+        metric: Optional[Callable] = None,
+        devset: Optional[List["dspy.Example"]] = None,
+        num_threads: Optional[int] = None,
+        display_progress: Optional[bool] = None,
+        display_table: Optional[bool] = None,
+        return_all_scores: Optional[bool] = None,
+        return_outputs: Optional[bool] = None,
+    ):
+        """
+        Args:
+            program (dspy.Module): The DSPy program to evaluate.
+            metric (Callable): The metric function to use for evaluation. if not provided, use `self.metric`.
+            devset (List[dspy.Example]): the evaluation dataset. if not provided, use `self.devset`.
+            num_threads (int): The number of threads to use for parallel evaluation. if not provided, use
+                `self.num_threads`.
+            display_progress (bool): Whether to display progress during evaluation. if not provided, use
+                `self.display_progress`.
+            display_table (bool): Whether to display the evaluation results in a table. if not provided, use
+                `self.display_table`.
+            return_all_scores (bool): Whether to return scores for every data record in `devset`. if not provided,
+                use `self.return_all_scores`.
+            return_outputs (bool): Whether to return the dspy program's outputs for every data in `devset`. if not
+                provided, use `self.return_outputs`.
 
-    def _execute_multi_thread(self, wrapped_program, devset, num_threads, display_progress):
-        ncorrect = 0
-        ntotal = 0
-        reordered_devset = []
-        
-        with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            futures = {executor.submit(wrapped_program, idx, arg) for idx, arg in devset}
-            pbar = tqdm.tqdm(total=len(devset), dynamic_ncols=True, disable=not display_progress)
+        Returns:
+            The evaluation results are returned in different formats based on the flags:
+            
+            - Base return: A float percentage score (e.g., 67.30) representing overall performance
+            
+            - With `return_all_scores=True`:
+                Returns (overall_score, individual_scores) where individual_scores is a list of 
+                float scores for each example in devset
+            
+            - With `return_outputs=True`:
+                Returns (overall_score, result_triples) where result_triples is a list of 
+                (example, prediction, score) tuples for each example in devset
 
-            for future in as_completed(futures):
-                example_idx, example, prediction, score = future.result()
-                reordered_devset.append((example_idx, example, prediction, score))
-                ncorrect += score
-                ntotal += 1
-                self._update_progress(pbar, ncorrect, ntotal)
-            pbar.close()
+            - With both flags=True:
+                Returns (overall_score, result_triples, individual_scores)
 
-        return reordered_devset, ncorrect, ntotal
-
-    def _update_progress(self, pbar, ncorrect, ntotal):
-        pbar.set_description(f"Average Metric: {ncorrect} / {ntotal}  ({round(100 * ncorrect / ntotal, 1)})")
-        pbar.update()
-
-    def __call__(self, program, metric=None, devset=None, num_threads=None,
-                 display_progress=None, display_table=None, display=None,
-                 return_all_scores=False, return_outputs=False):
+        """
         metric = metric if metric is not None else self.metric
         devset = devset if devset is not None else self.devset
         num_threads = num_threads if num_threads is not None else self.num_threads
         display_progress = display_progress if display_progress is not None else self.display_progress
         display_table = display_table if display_table is not None else self.display_table
+        return_all_scores = return_all_scores if return_all_scores is not None else self.return_all_scores
+        return_outputs = return_outputs if return_outputs is not None else self.return_outputs
 
-        display = self.display if display is None else display
-        display_progress = display_progress and display
-        display_table = display_table if display else False
-        return_outputs = return_outputs if return_outputs is not False else self.return_outputs
-        results = []
-        
-        def wrapped_program(example_idx, example):
-            # NOTE: TODO: Won't work if threads create threads!
-            creating_new_thread = threading.get_ident() not in dsp.settings.stack_by_thread
-            if creating_new_thread:
-                dsp.settings.stack_by_thread[threading.get_ident()] = list(dsp.settings.main_stack)
-                # print(threading.get_ident(), dsp.settings.stack_by_thread[threading.get_ident()])
+        tqdm.tqdm._instances.clear()
 
-            # print(type(example), example)
+        executor = ParallelExecutor(
+            num_threads=num_threads,
+            disable_progress_bar=not display_progress,
+            max_errors=self.max_errors,
+            provide_traceback=self.provide_traceback,
+            compare_results=True,
+        )
 
-            try:
-                prediction = program(**example.inputs())
-                score = metric(example, prediction)  # FIXME: TODO: What's the right order? Maybe force name-based kwargs!
-                
-                # increment assert and suggest failures to program's attributes
-                if hasattr(program, '_assert_failures'):
-                    program._assert_failures += dsp.settings.assert_failures
-                if hasattr(program, '_suggest_failures'):
-                    program._suggest_failures += dsp.settings.suggest_failures
-                
-                return example_idx, example, prediction, score
-            except Exception as e:
-                with self.error_lock:
-                    self.error_count += 1
-                    current_error_count = self.error_count
-                if current_error_count >= self.max_errors:
-                    raise e
-                print(f"Error for example in dev set: \t\t {e}")
-                return example_idx, example, dict(), 0.0
-            finally:
-                if creating_new_thread:
-                    del dsp.settings.stack_by_thread[threading.get_ident()]
+        def process_item(example):
+            prediction = program(**example.inputs())
+            score = metric(example, prediction)
 
-        devset = list(enumerate(devset))
+            # Increment assert and suggest failures to program's attributes
+            if hasattr(program, "_assert_failures"):
+                program._assert_failures += dspy.settings.get("assert_failures")
+            if hasattr(program, "_suggest_failures"):
+                program._suggest_failures += dspy.settings.get("suggest_failures")
 
-        if num_threads == 1:
-            reordered_devset, ncorrect, ntotal = self._execute_single_thread(wrapped_program, devset, display_progress)
-        else:
-            reordered_devset, ncorrect, ntotal = self._execute_multi_thread(wrapped_program, devset, num_threads, display_progress)
-        if return_outputs:  # Handle the return_outputs logic
-            results = [(example, prediction, score) for _, example, prediction, score in reordered_devset]
+            return prediction, score
 
-        if display:
-            print(f"Average Metric: {ncorrect} / {ntotal}  ({round(100 * ncorrect / ntotal, 1)}%)")
+        results = executor.execute(process_item, devset)
+        assert len(devset) == len(results)
 
-        predicted_devset = sorted(reordered_devset)
+        results = [((dspy.Prediction(), self.failure_score) if r is None else r) for r in results]
+        results = [(example, prediction, score) for example, (prediction, score) in zip(devset, results)]
+        ncorrect, ntotal = sum(score for *_, score in results), len(devset)
 
-        # data = [{**example, **prediction, 'correct': score} for example, prediction, score in zip(reordered_devset, preds, scores)]
-        data = [merge_dicts(example, prediction) | {'correct': score} for _, example, prediction, score in predicted_devset]
+        logger.info(f"Average Metric: {ncorrect} / {ntotal} ({round(100 * ncorrect / ntotal, 1)}%)")
+            
+        def prediction_is_dictlike(prediction):
+            # Downstream logic for displaying dictionary-like predictions depends solely on the predictions
+            # having a method called `items()` for iterating through key/value pairs
+            return hasattr(prediction, "items") and callable(getattr(prediction, "items"))
 
-        df = pd.DataFrame(data)
+        data = [
+            (
+                merge_dicts(example, prediction) | {"correct": score}
+                if prediction_is_dictlike(prediction)
+                else dict(example) | {"prediction": prediction, "correct": score}
+            )
+            for example, prediction, score in results
+        ]
 
-        # Truncate every cell in the DataFrame
-        df = df.applymap(truncate_cell)
+
+        # Truncate every cell in the DataFrame (DataFrame.applymap was renamed to DataFrame.map in Pandas 2.1.0)
+        result_df = pd.DataFrame(data)
+        result_df = result_df.map(truncate_cell) if hasattr(result_df, "map") else result_df.applymap(truncate_cell)
 
         # Rename the 'correct' column to the name of the metric object
-        assert(callable(metric))
         metric_name = metric.__name__ if isinstance(metric, types.FunctionType) else metric.__class__.__name__
-        df.rename(columns={'correct': metric_name}, inplace=True)
+        result_df = result_df.rename(columns={"correct": metric_name})
 
         if display_table:
-            if isinstance(display_table, int):
-                df_to_display = df.head(display_table).copy()
-                truncated_rows = len(df) - display_table
-            else:
-                df_to_display = df.copy()
+            if isinstance(display_table, bool):
+                df_to_display = result_df.copy()
                 truncated_rows = 0
+            else:
+                df_to_display = result_df.head(display_table).copy()
+                truncated_rows = len(result_df) - display_table
 
-            styled_df = configure_dataframe_display(df_to_display, metric_name)
-            
-            ipython_display(styled_df)
+            df_to_display = stylize_metric_name(df_to_display, metric_name)
+
+            display_dataframe(df_to_display)
 
             if truncated_rows > 0:
                 # Simplified message about the truncated rows
                 message = f"""
                 <div style='
-                    text-align: center; 
-                    font-size: 16px; 
-                    font-weight: bold; 
-                    color: #555; 
+                    text-align: center;
+                    font-size: 16px;
+                    font-weight: bold;
+                    color: #555;
                     margin: 10px 0;'>
                     ... {truncated_rows} more rows not displayed ...
                 </div>
                 """
-                ipython_display(HTML(message))
-                
+                display(HTML(message))
+
         if return_all_scores and return_outputs:
-            return round(100 * ncorrect / ntotal, 2), results
-        elif return_all_scores:
-            return round(100 * ncorrect / ntotal, 2), [score for *_, score in reordered_devset]
-        elif return_outputs:
+            return round(100 * ncorrect / ntotal, 2), results, [score for *_, score in results]
+        if return_all_scores:
+            return round(100 * ncorrect / ntotal, 2), [score for *_, score in results]
+        if return_outputs:
             return round(100 * ncorrect / ntotal, 2), results
 
         return round(100 * ncorrect / ntotal, 2)
 
 
-def merge_dicts(d1, d2):
+def merge_dicts(d1, d2) -> dict:
     merged = {}
     for k, v in d1.items():
         if k in d2:
@@ -200,32 +242,64 @@ def merge_dicts(d1, d2):
     return merged
 
 
-def truncate_cell(content):
+def truncate_cell(content) -> str:
     """Truncate content of a cell to 25 words."""
     words = str(content).split()
     if len(words) > 25:
-        return ' '.join(words[:25]) + '...'
+        return " ".join(words[:25]) + "..."
     return content
 
-def configure_dataframe_display(df, metric_name):
-    """Set various pandas display options for DataFrame."""
-    pd.options.display.max_colwidth = None
-    pd.set_option('display.max_colwidth', 20)  # Adjust the number as needed
-    pd.set_option('display.width', 400)  # Adjust
 
-    # df[metric_name] = df[metric_name].apply(lambda x: f'✔️ [{x}]' if x is True else f'❌ [{x}]')
-    df.loc[:, metric_name] = df[metric_name].apply(lambda x: f'✔️ [{x}]' if x is True else f'{x}')
+def stylize_metric_name(df: pd.DataFrame, metric_name: str) -> pd.DataFrame:
+    """
+    Stylize the cell contents of a pandas DataFrame corresponding to the specified metric name.
 
-    # Return styled DataFrame
-    return df.style.set_table_styles([
-        {'selector': 'th', 'props': [('text-align', 'left')]},
-        {'selector': 'td', 'props': [('text-align', 'left')]}
-    ]).set_properties(**{
-        'text-align': 'left',
-        'white-space': 'pre-wrap',
-        'word-wrap': 'break-word',
-        'max-width': '400px'
-    })
+    :param df: The pandas DataFrame for which to stylize cell contents.
+    :param metric_name: The name of the metric for which to stylize DataFrame cell contents.
+    """
+    df[metric_name] = df[metric_name].apply(
+        lambda x: f"✔️ [{x:.3f}]" if x and isinstance(x, float) else f"✔️ [{x}]" if x else ""
+    )
+    return df
+
+
+def display_dataframe(df: pd.DataFrame):
+    """
+    Display the specified Pandas DataFrame in the console.
+
+    :param df: The Pandas DataFrame to display.
+    """
+    if is_in_ipython_notebook_environment():
+        display(configure_dataframe_for_ipython_notebook_display(df))
+    else:
+        # Pretty print the DataFrame to the console
+        with pd.option_context(
+            "display.max_rows", None, "display.max_columns", None
+        ):  # more options can be specified also
+            print(df)
+
+
+def configure_dataframe_for_ipython_notebook_display(df: pd.DataFrame) -> pd.DataFrame:
+    """Set various pandas display options for DataFrame in an IPython notebook environment."""
+    pd.options.display.max_colwidth = 70
+    return df
+
+
+def is_in_ipython_notebook_environment():
+    """
+    Check if the current environment is an IPython notebook environment.
+
+    :return: True if the current environment is an IPython notebook environment, False otherwise.
+    """
+    try:
+        from IPython import get_ipython
+
+        # This is a best-effort check to see if we are in an IPython notebook environment
+        return "IPKernelApp" in getattr(get_ipython(), "config", {})
+    except ImportError:
+        return False
+
 
 # FIXME: TODO: The merge_dicts stuff above is way too quick and dirty.
-# TODO: the display_table can't handle False but can handle 0! Not sure how it works with True exactly, probably fails too.
+# TODO: the display_table can't handle False but can handle 0!
+# Not sure how it works with True exactly, probably fails too.

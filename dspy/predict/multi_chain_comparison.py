@@ -1,9 +1,8 @@
 import dspy
 from dspy.signatures.signature import ensure_signature
-from .predict import Predict
-from ..primitives.program import Module
 
-import dsp
+from ..primitives.program import Module
+from .predict import Predict
 
 
 class MultiChainComparison(Module):
@@ -19,7 +18,7 @@ class MultiChainComparison(Module):
             signature = signature.append(
                 f"reasoning_attempt_{idx+1}",
                 dspy.InputField(
-                    prefix=f"Student Attempt #{idx+1}:", desc="${reasoning attempt}"
+                    prefix=f"Student Attempt #{idx+1}:", desc="${reasoning attempt}",
                 ),
             )
 
@@ -37,13 +36,13 @@ class MultiChainComparison(Module):
         attempts = []
 
         for c in completions:
-            rationale = c.rationale.strip().split("\n")[0].strip()
-            answer = c[self.last_key].strip().split("\n")[0].strip()
+            rationale = c.get('rationale', c.get('reasoning')).strip().split("\n")[0].strip()
+            answer = str(c[self.last_key]).strip().split("\n")[0].strip()
             attempts.append(
-                f"«I'm trying to {rationale} I'm not sure but my prediction is {answer}»"
+                f"«I'm trying to {rationale} I'm not sure but my prediction is {answer}»",
             )
 
-        assert len(attempts) == self.M, len(attempts)
+        assert len(attempts) == self.M, f"The number of attempts ({len(attempts)}) doesn't match the expected number M ({self.M}). Please set the correct value for M when initializing MultiChainComparison."
 
         kwargs = {
             **{
