@@ -1,37 +1,36 @@
-from dsp.modules.hf_client import ChatModuleClient
-from dsp.modules.hf_client import HFServerTGI, HFClientVLLM, HFClientSGLang
-from .signatures import *
+from dspy.predict import *
+from dspy.primitives import *
+from dspy.retrieve import *
+from dspy.signatures import *
+from dspy.teleprompt import *
 
-from .retrieve import *
-from .predict import *
-from .primitives import *
+import dspy.retrievers
 
-# from .evaluation import *
+from dspy.evaluate import Evaluate  # isort: skip
+from dspy.clients import *  # isort: skip
+from dspy.adapters import Adapter, ChatAdapter, JSONAdapter, Image  # isort: skip
+from dspy.utils.logging_utils import configure_dspy_loggers, disable_logging, enable_logging
+from dspy.utils.asyncify import asyncify
+from dspy.utils.saving import load
+from dspy.utils.streaming import streamify
 
+from dspy.dsp.utils.settings import settings
 
-# FIXME:
+configure_dspy_loggers(__name__)
 
-
-import dsp
-
-settings = dsp.settings
-
-OpenAI = dsp.GPT3
-Databricks = dsp.Databricks
-Cohere = dsp.Cohere
-ColBERTv2 = dsp.ColBERTv2
-Pyserini = dsp.PyseriniRetriever
-Clarifai = dsp.ClarifaiLLM
-Google = dsp.Google
-
-HFClientTGI = dsp.HFClientTGI
-HFClientVLLM = HFClientVLLM
-
-Anyscale = dsp.Anyscale
-Together = dsp.Together
-HFModel = dsp.HFModel
-OllamaLocal = dsp.OllamaLocal
-Bedrock = dsp.Bedrock
+from dspy.dsp.colbertv2 import ColBERTv2
+# from dspy.dsp.you import You
 
 configure = settings.configure
 context = settings.context
+
+BootstrapRS = BootstrapFewShotWithRandomSearch
+
+from .__metadata__ import (
+    __name__,
+    __version__,
+    __description__,
+    __url__,
+    __author__,
+    __author_email__
+)

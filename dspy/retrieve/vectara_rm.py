@@ -1,12 +1,12 @@
-from collections import defaultdict
-from typing import List, Union
-import dspy
-from typing import Optional
 import json
 import os
+from collections import defaultdict
+from typing import List, Optional, Union
+
 import requests
 
-from dsp.utils import dotdict
+import dspy
+from dspy.dsp.utils import dotdict
 
 START_SNIPPET = "<%START%>"
 END_SNIPPET = "<%END%>"
@@ -18,7 +18,7 @@ class VectaraRM(dspy.Retrieve):
     """
     A retrieval module that uses Vectara to return the top passages for a given query.
 
-    Assumes that a Vectara corpus has been created and populated with the following payload:
+    Assumes that a Vectara corpora have been created and populated with the following payload:
         - document: The text of the passage
 
     Args:
@@ -67,17 +67,21 @@ class VectaraRM(dspy.Retrieve):
     def _vectara_query(
         self,
         query: str,
-        limit: int = 3,
+        limit: int = 5,
     ) -> List[str]:
         """Query Vectara index to get for top k matching passages.
         Args:
             query: query string
         """
-        corpus_key = {
-            "customerId": self._vectara_customer_id,
-            "corpusId": self._vectara_corpus_id,
-            "lexicalInterpolationConfig": {"lambda": 0.025 }
-        }
+        # If multiple corpus ids are provided (comma-separated), create a list of corpus keys
+        # otherwise by default, the `split(',')` is a no-op so retains the single corpus id
+        corpus_key = [
+            {
+                "customerId": self._vectara_customer_id,
+                "corpusId": corpus_id,
+                "lexicalInterpolationConfig": {"lambda": 0.025 },
+            } for corpus_id in self._vectara_corpus_id.split(',')
+        ]
 
         data = {
             "query": [
@@ -91,9 +95,9 @@ class VectaraRM(dspy.Retrieve):
                         "startTag": START_SNIPPET,
                         "endTag": END_SNIPPET,
                     },
-                    "corpusKey": [corpus_key],
-                }
-            ]
+                    "corpusKey": corpus_key,
+                },
+            ],
         }
 
         headers = {
@@ -124,7 +128,7 @@ class VectaraRM(dspy.Retrieve):
         res = [
             {
                 "text": remove_snippet(x["text"]),
-                "score": x["score"]
+                "score": x["score"],
             } for x in responses
         ]
         return res

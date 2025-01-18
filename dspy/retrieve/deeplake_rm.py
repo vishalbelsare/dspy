@@ -2,22 +2,23 @@
 Retriever model for deeplake
 """
 
-from typing import Optional, List, Union, Type
-import openai
-import dspy
 from collections import defaultdict
-from dsp.utils import dotdict
+from typing import List, Optional, Union
+
+import openai
+
+import dspy
+from dspy.dsp.utils import dotdict
 
 try:
-    import openai.error
+    import openai
 
     ERRORS = (
-        openai.error.RateLimitError,
-        openai.error.ServiceUnavailableError,
-        openai.error.APIError,
+        openai.RateLimitError,
+        openai.APIError,
     )
 except Exception:
-    ERRORS = (openai.error.RateLimitError, openai.error.APIError)
+    ERRORS = (openai.RateLimitError, openai.APIError)
 
 
 class DeeplakeRM(dspy.Retrieve):
@@ -56,13 +57,15 @@ class DeeplakeRM(dspy.Retrieve):
         k: int = 3,
     ):
         try:
-          from deeplake import VectorStore
+            from deeplake import VectorStore
         except ImportError:
-          raise ImportError(
-              "The 'deeplake' extra is required to use DeepLakeRM. Install it with `pip install dspy-ai[deeplake]`"
-          )
+            raise ImportError("The 'deeplake' extra is required to use DeepLakeRM. Install it with `pip install dspy-ai[deeplake]`",)
+
         self._deeplake_vectorstore_name = deeplake_vectorstore_name
-        self._deeplake_client = deeplake_client
+        self._deeplake_client = deeplake_client(
+            path=self._deeplake_vectorstore_name,
+            embedding_function=self.embedding_function,
+            )
 
         super().__init__(k=k)
 
@@ -71,13 +74,11 @@ class DeeplakeRM(dspy.Retrieve):
             texts = [texts]
 
         texts = [t.replace("\n", " ") for t in texts]
-        return [
-            data["embedding"]
-            for data in openai.Embedding.create(input=texts, model=model)["data"]
-        ]
-
+        
+        return [data.embedding for data in openai.embeddings.create(input = texts, model=model).data]
+    
     def forward(
-        self, query_or_queries: Union[str, List[str]], k: Optional[int]
+        self, query_or_queries: Union[str, List[str]], k: Optional[int],**kwargs,
     ) -> dspy.Prediction:
         
         """Search with DeepLake for self.k top passages for query
@@ -101,10 +102,7 @@ class DeeplakeRM(dspy.Retrieve):
         passages = defaultdict(float)
         #deeplake doesn't support batch querying, manually querying each query and storing them
         for query in queries:
-            results = self._deeplake_client(
-            path=self._deeplake_vectorstore_name,
-            embedding_function=self.embedding_function
-            ).search(query, k=k)
+            results = self._deeplake_client.search(query, k=k, **kwargs)
 
             for score,text in zip(results.get('score',0.0),results.get('text',"")):
                 passages[text] += score

@@ -7,18 +7,18 @@ Optimizer Tester is intended to allow simple and repeatable testing of DSPy Opti
 To use the Optimizer Tester in code instantiate an OptimizerTester object:
 
 ```python
-from testing.optimizer_tester import OptimizerTester
+from optimizer_tester import OptimizerTester
 
 tester = OptimizerTester()
 ```
 
-The default verison (no parameters) expects a llama model hosted on ports [7140, 7141, 7142, 7143] and OpenAI keys stored in a .env file (OPENAI_API_KEY and OPENAI_API_BASE).
+The default version (no parameters) expects a llama model hosted on ports [7140, 7141, 7142, 7143] and OpenAI keys stored in a .env file (OPENAI_API_KEY and OPENAI_API_BASE).
 
 If you prefer to specify your own model parameters then you can pass models into the OptimizerTester
 
 ```python
-task_model = dspy.HFClientTGI(...)
-prompt_model = dspy.OpenAI(...)
+task_model = dspy.LM(...)
+prompt_model = dspy.LM(...)
 
 tester = OptimizerTester(task_model=task_model, prompt_model=prompt_model)
 ```
@@ -26,7 +26,7 @@ tester = OptimizerTester(task_model=task_model, prompt_model=prompt_model)
 If you just want to get baseline results for a particular task you're ready to go!
 
 ```python
-tester.test_baseline(datasets=["HotPotQA", "GSM8K", "Scone"])
+tester.test_baseline(datasets=["hotpotqa", "gsm8k", "scone"])
 ```
 
 If you want to test out a custom optimizer you'll have to write a quick function to call it properly:
